@@ -4,6 +4,8 @@ A neighbourhood tool-lending board. Neighbours list tools they rarely use, other
 
 **Stack:** Next.js 16 (App Router) · TypeScript · Clerk · Convex · n8n · Tailwind CSS 4 · Vitest
 
+**Live demo:** [https://lendloop-chi.vercel.app](https://lendloop-chi.vercel.app)
+
 - [Live backend](#live-backend)
 - [Features](#features)
 - [Architecture](#architecture)
@@ -15,6 +17,8 @@ A neighbourhood tool-lending board. Neighbours list tools they rarely use, other
 - [What I'd change for production](#what-id-change-for-production)
 
 ## Live backend
+
+**Live demo:** [https://lendloop-chi.vercel.app](https://lendloop-chi.vercel.app)
 
 A Convex **dev** deployment in `ap-southeast-2` is already provisioned for this repo:
 
