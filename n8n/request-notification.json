@@ -1,0 +1,286 @@
+{
+  "id": "LendLoopReqNotif1",
+  "name": "LendLoop – Request notification",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "LendLoopErrorWf1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop/request-created",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "358a9392-681f-59f3-bfc8-7a87e0b1a7f5",
+      "name": "Convex webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "6f1f7a2e-9d0b-4a51-9a49-3c1e5d0a7b21"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifies the HMAC signature Convex put on this webhook call.\n// Wire format: see convex/lib/hmac.ts. Secret comes from the n8n env var\n// CONVEX_TO_N8N_SECRET (never hard-coded in the workflow).\nconst crypto = require('crypto');\nconst TOLERANCE_S = 300;\n\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst secret = $env.CONVEX_TO_N8N_SECRET;\nif (!secret) throw new Error('CONVEX_TO_N8N_SECRET is not set in the n8n environment');\n\n// Verify against the exact bytes Convex signed (Webhook node has \"Raw Body\" on).\nlet rawBody;\ntry {\n  rawBody = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n} catch (e) {\n  rawBody = JSON.stringify(item.json.body ?? {});\n}\n\nconst reject = (reason) => [{ json: { valid: false, reason } }];\nconst signature = String(headers['x-lendloop-signature'] || '');\nconst timestamp = String(headers['x-lendloop-timestamp'] || '');\nconst nonce = String(headers['x-lendloop-nonce'] || '');\nif (!signature || !timestamp || !nonce) return reject('missing_headers');\nif (!/^\\d{1,12}$/.test(timestamp)) return reject('bad_timestamp');\nif (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return reject('bad_nonce');\n\nconst now = Math.floor(Date.now() / 1000);\nif (Math.abs(now - Number(timestamp)) > TOLERANCE_S) return reject('stale_timestamp');\n\nconst expected = 'v1=' + crypto.createHmac('sha256', secret)\n  .update(`${timestamp}.${nonce}.${rawBody}`).digest('hex');\nconst a = Buffer.from(expected);\nconst b = Buffer.from(signature.trim());\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return reject('bad_signature');\n\n// Replay protection: each nonce is accepted once inside the window.\nconst store = $getWorkflowStaticData('global');\nstore.nonces = store.nonces || {};\nstore.processed = store.processed || {};\nfor (const [n, exp] of Object.entries(store.nonces)) if (exp < now) delete store.nonces[n];\nfor (const [k, exp] of Object.entries(store.processed)) if (exp < now) delete store.processed[k];\nif (store.nonces[nonce]) return reject('replayed_nonce');\nstore.nonces[nonce] = now + 2 * TOLERANCE_S;\n\nconst payload = JSON.parse(rawBody);\n// Idempotency: Convex retries reuse the same eventId; skip ones already handled.\nconst duplicate = Boolean(store.processed[payload.eventId]);\nreturn [{ json: { valid: true, duplicate, payload } }];\n"
+      },
+      "id": "34c40cda-3c21-51ea-95d6-c1bfe1273c35",
+      "name": "Verify HMAC signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cccf90a4-2170-5854-ba64-318ce784f0cb",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ad581864-28ee-5fb6-8e09-14595a8735e0",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"unauthorized\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "a844106c-09b1-5c02-a081-d1e6a01a71c9",
+      "name": "Reject (401)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "52ebd5bb-b32e-5f4a-835a-50fc9ecf6e13",
+              "leftValue": "={{ $json.duplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c913084f-d84f-5e8c-8fcb-7de343ebaa13",
+      "name": "Already processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true, \"duplicate\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "d71519a9-5362-5aa7-a986-1fe3b0a65371",
+      "name": "Ack duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_FROM_EMAIL }}",
+        "toEmail": "={{ $json.payload.lender.email }}",
+        "subject": "={{ $json.payload.borrowerName }} wants to borrow your {{ $json.payload.toolName }}",
+        "emailFormat": "text",
+        "text": "=Hi {{ $json.payload.lender.name }},\n\n{{ $json.payload.borrowerName }} asked to borrow your {{ $json.payload.toolName }} from {{ $json.payload.startDate }} to {{ $json.payload.endDate }}.\n{{ $json.payload.message ? 'Their note: \"' + $json.payload.message + '\"' : '' }}\n\nApprove or decline it here: {{ $json.payload.reviewUrl }}\n\n– LendLoop",
+        "options": {}
+      },
+      "id": "4eb9be5f-eb94-5359-9050-52c26953ffef",
+      "name": "Email lender",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        280
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "lendloopSmtp0001",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Remember the eventId only after the email went out, so a Convex retry of a\n// failed delivery is processed again, but a retry of a successful one is not.\nconst store = $getWorkflowStaticData('global');\nstore.processed = store.processed || {};\nconst eventId = $('Verify HMAC signature').first().json.payload.eventId;\nstore.processed[eventId] = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;\nreturn [{ json: { ok: true, eventId } }];\n"
+      },
+      "id": "3ff17660-1213-517c-a322-9dfa35b41887",
+      "name": "Mark event processed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "c9756cd9-80e9-5b4b-a3f5-4aa4c4b02898",
+      "name": "Ack (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        280
+      ]
+    }
+  ],
+  "connections": {
+    "Convex webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify HMAC signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify HMAC signature": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Already processed?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject (401)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already processed?": {
+      "main": [
+        [
+          {
+            "node": "Ack duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email lender",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email lender": {
+      "main": [
+        [
+          {
+            "node": "Mark event processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark event processed": {
+      "main": [
+        [
+          {
+            "node": "Ack (200)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

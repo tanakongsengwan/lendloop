@@ -1,0 +1,188 @@
+{
+  "id": "LendLoopOverdue01",
+  "name": "LendLoop – Daily overdue reminder",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "LendLoopErrorWf1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "Asia/Bangkok"
+  },
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "2ec8c1ab-36b4-5bcb-8640-f4e429e092f5",
+      "name": "Every day at 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- signed request helper (same wire format as convex/lib/hmac.ts) -------\n// Re-signs on every attempt (fresh timestamp + nonce), because Convex rejects\n// a reused nonce. Retries network errors, 408/429 and 5xx with backoff.\nconst crypto = require('crypto');\nconst secret = $env.N8N_TO_CONVEX_SECRET;\nconst baseUrl = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nif (!secret || !baseUrl) throw new Error('N8N_TO_CONVEX_SECRET and CONVEX_SITE_URL must be set in the n8n environment');\n\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst signedPost = async (path, data, attempts = 4) => {\n  const body = JSON.stringify(data ?? {});\n  let lastError;\n  for (let attempt = 1; attempt <= attempts; attempt++) {\n    const timestamp = Math.floor(Date.now() / 1000).toString();\n    const nonce = crypto.randomBytes(16).toString('hex');\n    const signature = 'v1=' + crypto.createHmac('sha256', secret)\n      .update(`${timestamp}.${nonce}.${body}`).digest('hex');\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: baseUrl + path,\n        body,\n        headers: {\n          'Content-Type': 'application/json',\n          'X-LendLoop-Timestamp': timestamp,\n          'X-LendLoop-Nonce': nonce,\n          'X-LendLoop-Signature': signature,\n        },\n        returnFullResponse: true,\n        ignoreHttpStatusErrors: true,\n        timeout: 15000,\n      });\n      const status = res.statusCode;\n      const parsed = typeof res.body === 'string' ? JSON.parse(res.body || '{}') : res.body;\n      if (status >= 200 && status < 300) return parsed;\n      lastError = new Error(`Convex ${path} returned HTTP ${status}: ${JSON.stringify(parsed)}`);\n      if (status < 500 && status !== 408 && status !== 429) break; // not retryable\n    } catch (err) {\n      lastError = err;\n    }\n    if (attempt < attempts) await sleep(1000 * 2 ** attempt);\n  }\n  throw lastError;\n};\n// --------------------------------------------------------------------------\n// Ask Convex for overdue loans. Response contains only what a reminder needs.\nconst data = await signedPost('/n8n/overdue-loans', {});\nreturn (data.loans || []).map((loan) => ({ json: loan }));\n"
+      },
+      "id": "fccbf180-d596-5b5d-a1fc-5419b15b53de",
+      "name": "Fetch overdue loans (signed)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_FROM_EMAIL }}",
+        "toEmail": "={{ $json.borrower.email }}",
+        "subject": "=Reminder: please return the {{ $json.toolName }}",
+        "emailFormat": "text",
+        "text": "=Hi {{ $json.borrower.name }},\n\nThe {{ $json.toolName }} you borrowed was due back on {{ $json.endDate }} ({{ $json.daysOverdue }} day(s) ago). Please return it to the lender, then mark the loan returned in LendLoop.\n\nThanks for keeping the loop going!\n– LendLoop",
+        "options": {}
+      },
+      "id": "68637f37-fe16-5024-bafc-46bd62e56d98",
+      "name": "Email borrower",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        440,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "lendloopSmtp0001",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const loan = $('Fetch overdue loans (signed)').item.json;\nreturn { json: { loanId: loan.loanId, idempotencyKey: loan.idempotencyKey, status: 'sent' } };\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "93557a28-3987-56ee-b129-53673a0d437d",
+      "name": "Mark sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const loan = $('Fetch overdue loans (signed)').item.json;\nconst message = $json.error?.message || $json.error || 'Email delivery failed';\nreturn {\n  json: {\n    loanId: loan.loanId,\n    idempotencyKey: loan.idempotencyKey,\n    status: 'failed',\n    detail: String(message).slice(0, 300),\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "35574e59-b8b0-563b-88a4-a679a8453b24",
+      "name": "Mark failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- signed request helper (same wire format as convex/lib/hmac.ts) -------\n// Re-signs on every attempt (fresh timestamp + nonce), because Convex rejects\n// a reused nonce. Retries network errors, 408/429 and 5xx with backoff.\nconst crypto = require('crypto');\nconst secret = $env.N8N_TO_CONVEX_SECRET;\nconst baseUrl = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nif (!secret || !baseUrl) throw new Error('N8N_TO_CONVEX_SECRET and CONVEX_SITE_URL must be set in the n8n environment');\n\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst signedPost = async (path, data, attempts = 4) => {\n  const body = JSON.stringify(data ?? {});\n  let lastError;\n  for (let attempt = 1; attempt <= attempts; attempt++) {\n    const timestamp = Math.floor(Date.now() / 1000).toString();\n    const nonce = crypto.randomBytes(16).toString('hex');\n    const signature = 'v1=' + crypto.createHmac('sha256', secret)\n      .update(`${timestamp}.${nonce}.${body}`).digest('hex');\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: baseUrl + path,\n        body,\n        headers: {\n          'Content-Type': 'application/json',\n          'X-LendLoop-Timestamp': timestamp,\n          'X-LendLoop-Nonce': nonce,\n          'X-LendLoop-Signature': signature,\n        },\n        returnFullResponse: true,\n        ignoreHttpStatusErrors: true,\n        timeout: 15000,\n      });\n      const status = res.statusCode;\n      const parsed = typeof res.body === 'string' ? JSON.parse(res.body || '{}') : res.body;\n      if (status >= 200 && status < 300) return parsed;\n      lastError = new Error(`Convex ${path} returned HTTP ${status}: ${JSON.stringify(parsed)}`);\n      if (status < 500 && status !== 408 && status !== 429) break; // not retryable\n    } catch (err) {\n      lastError = err;\n    }\n    if (attempt < attempts) await sleep(1000 * 2 ** attempt);\n  }\n  throw lastError;\n};\n// --------------------------------------------------------------------------\n// Idempotent write-back: the idempotencyKey (loan + day) comes from Convex,\n// so re-running this node or the whole workflow never double-records.\nconst results = [];\nfor (const item of $input.all()) {\n  const { loanId, idempotencyKey, status, detail } = item.json;\n  const res = await signedPost('/n8n/reminder-status', { loanId, idempotencyKey, status, detail });\n  results.push({ json: { loanId, status, duplicate: res.duplicate === true } });\n}\nreturn results;\n"
+      },
+      "id": "a8118624-6215-5f07-abfb-d9d09647ccfa",
+      "name": "Write status back to Convex (signed)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Every day at 09:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch overdue loans (signed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch overdue loans (signed)": {
+      "main": [
+        [
+          {
+            "node": "Email borrower",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email borrower": {
+      "main": [
+        [
+          {
+            "node": "Mark sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark sent": {
+      "main": [
+        [
+          {
+            "node": "Write status back to Convex (signed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark failed": {
+      "main": [
+        [
+          {
+            "node": "Write status back to Convex (signed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "id": "LendLoopErrorWf1",
+  "name": "LendLoop – Error handler",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": [],
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "0e52d0c3-9bd0-5c70-848c-96bdda7b979c",
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- signed request helper (same wire format as convex/lib/hmac.ts) -------\n// Re-signs on every attempt (fresh timestamp + nonce), because Convex rejects\n// a reused nonce. Retries network errors, 408/429 and 5xx with backoff.\nconst crypto = require('crypto');\nconst secret = $env.N8N_TO_CONVEX_SECRET;\nconst baseUrl = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nif (!secret || !baseUrl) throw new Error('N8N_TO_CONVEX_SECRET and CONVEX_SITE_URL must be set in the n8n environment');\n\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst signedPost = async (path, data, attempts = 4) => {\n  const body = JSON.stringify(data ?? {});\n  let lastError;\n  for (let attempt = 1; attempt <= attempts; attempt++) {\n    const timestamp = Math.floor(Date.now() / 1000).toString();\n    const nonce = crypto.randomBytes(16).toString('hex');\n    const signature = 'v1=' + crypto.createHmac('sha256', secret)\n      .update(`${timestamp}.${nonce}.${body}`).digest('hex');\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: baseUrl + path,\n        body,\n        headers: {\n          'Content-Type': 'application/json',\n          'X-LendLoop-Timestamp': timestamp,\n          'X-LendLoop-Nonce': nonce,\n          'X-LendLoop-Signature': signature,\n        },\n        returnFullResponse: true,\n        ignoreHttpStatusErrors: true,\n        timeout: 15000,\n      });\n      const status = res.statusCode;\n      const parsed = typeof res.body === 'string' ? JSON.parse(res.body || '{}') : res.body;\n      if (status >= 200 && status < 300) return parsed;\n      lastError = new Error(`Convex ${path} returned HTTP ${status}: ${JSON.stringify(parsed)}`);\n      if (status < 500 && status !== 408 && status !== 429) break; // not retryable\n    } catch (err) {\n      lastError = err;\n    }\n    if (attempt < attempts) await sleep(1000 * 2 ** attempt);\n  }\n  throw lastError;\n};\n// --------------------------------------------------------------------------\n// Error workflow: record the failed execution on Convex so it shows up as\n// automation activity. Keyed by execution id, so re-reporting is a no-op.\nconst { execution = {}, workflow = {} } = $input.first().json;\nconst payload = {\n  idempotencyKey: `n8n-error:${workflow.id || 'unknown'}:${execution.id || Date.now()}`,\n  workflow: String(workflow.name || 'unknown workflow').slice(0, 200),\n  node: execution.lastNodeExecuted ? String(execution.lastNodeExecuted).slice(0, 200) : undefined,\n  message: String(execution.error?.message || 'Unknown error').slice(0, 450),\n};\nconst res = await signedPost('/n8n/workflow-error', payload);\nreturn [{ json: { reported: true, duplicate: res.duplicate === true } }];\n"
+      },
+      "id": "cd190a1a-1ee4-5111-8dcf-f79ae66c87e3",
+      "name": "Report failure to Convex (signed)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Report failure to Convex (signed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
