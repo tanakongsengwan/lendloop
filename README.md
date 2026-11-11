@@ -4,6 +4,7 @@ A neighbourhood tool-lending board. Neighbours list tools they rarely use, other
 
 **Stack:** Next.js 16 (App Router) · TypeScript · Clerk · Convex · n8n · Tailwind CSS 4 · Vitest
 
+- [Live backend](#live-backend)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Local setup](#local-setup)
@@ -12,6 +13,15 @@ A neighbourhood tool-lending board. Neighbours list tools they rarely use, other
 - [Security and data minimisation](#security-and-data-minimisation)
 - [Testing](#testing)
 - [What I'd change for production](#what-id-change-for-production)
+
+## Live backend
+
+A Convex **dev** deployment in `ap-southeast-2` is already provisioned for this repo:
+
+- Client: `https://effervescent-toad-200.ap-southeast-2.convex.cloud`
+- HTTP actions: `https://effervescent-toad-200.ap-southeast-2.convex.site`
+
+Set `NEXT_PUBLIC_CONVEX_URL` in `.env.local` to the client URL above (or run `npx convex dev` against your own deployment). n8n is not hosted with this repo; `N8N_REQUEST_WEBHOOK_URL` is currently the local placeholder `http://localhost:5678/webhook/lendloop/request-created` until a publicly reachable n8n is available.
 
 ## Features
 
